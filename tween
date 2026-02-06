@@ -1,0 +1,42 @@
+wait(10)
+-- Enhanced Tween with Camera Follow
+local targetCFrame = CFrame.new(
+    -178.025894, 214.051437, 234.363297,
+    0.0837951154, -1.23308524e-07, 0.996483028,
+    1.44113468e-08, 1, 1.22531873e-07,
+    -0.996483028, 4.09309076e-09, 0.0837951154
+)
+
+local player = game.Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+local camera = workspace.CurrentCamera
+
+-- Store original camera type
+local originalCameraType = camera.CameraType
+
+-- Set camera to follow during tween
+camera.CameraType = Enum.CameraType.Scriptable
+
+local tweenService = game:GetService("TweenService")
+local tweenInfo = TweenInfo.new(5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+-- Create tweens for both position and camera
+local characterTween = tweenService:Create(humanoidRootPart, tweenInfo, {CFrame = targetCFrame})
+
+-- Smooth camera movement (optional)
+local cameraCFrame = targetCFrame * CFrame.new(0, 5, -10) -- Camera offset
+local cameraTween = tweenService:Create(camera, tweenInfo, {CFrame = cameraCFrame})
+
+-- Play both tweens
+characterTween:Play()
+cameraTween:Play()
+
+print("🚀 Tweening to position...")
+print("📍 Target Position: X=" .. -178.03 .. ", Y=" .. 214.05 .. ", Z=" .. 234.36)
+
+-- Reset camera when done
+characterTween.Completed:Connect(function()
+    camera.CameraType = originalCameraType
+    print("✅ Tween complete! Arrived at destination.")
+end)
