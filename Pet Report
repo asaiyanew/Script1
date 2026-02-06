@@ -1,0 +1,368 @@
+-- Targeted Pet Tracker - High Rarity Only
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+
+local INVENTORY_WEBHOOK = "https://discord.com/api/webhooks/1467133699047952619/N80aqenP7w2IjSd0Rg3tg25MRbvRW2QIr7enJ09exaHD7odfboOkb2_QugbXKeeF8yTv"
+local CHECK_INTERVAL = 300  -- Check every 5 minutes
+local USER_ID_TO_PING = "<@1299719492598763636>"
+
+-- Only track these specific pets - with rarity-based ping settings
+local TARGET_PETS = {
+    -- Rarity 1/250,000 or BETTER will ping
+    ["Fortunate Calico"] = {
+        rarity = "1/1,500,000",
+        rarityValue = 1500000,
+        ping = true,  -- YES PING (1/250k qualifies)
+        egg = "Celestial Egg?"
+    },
+    ["SUPER Lockyblock"] = {
+        rarity = "1/500,000", 
+        rarityValue = 500000,
+        ping = false,  -- YES PING (rarer than 1/250k)
+        egg = "Galaxy Egg?"
+    },
+    ["JACKPOT"] = {
+        rarity = "1/5,000,000",
+        rarityValue = 5000000,
+        ping = true,  -- YES PING (much rarer than 1/250k)
+        egg = "Rainbow Egg?"
+    },
+    -- Rarity WORSE than 1/250,000 - NO PING
+    ["Orbital Demigod"] = {
+        rarity = "1/20,000",
+        rarityValue = 20000,
+        ping = false,  -- NO PING (less rare than 1/250k)
+        egg = "Mythical Egg?"
+    }
+}
+
+print("=== HIGH RARITY PET TRACKER ===")
+print("Tracking 4 target pets...")
+
+for petName, info in pairs(TARGET_PETS) do
+    local pingStatus = info.ping and "🔔 (WILL PING)" or "🔕 (no ping)"
+    print(string.format("  %s - %s %s", petName, info.rarity, pingStatus))
+end
+
+local pingedPetsThisSession = {}
+local sessionStartTime = os.time()
+
+local function parseRarityNumber(rarityStr)
+    -- Convert "1/250,000" to number 250000
+    local num = rarityStr:match("1/([%d,]+)")
+    if num then
+        return tonumber((num:gsub(",", "")))
+    end
+    return 0
+end
+
+local function scanForTargetPets()
+    local player = Players.LocalPlayer
+    local foundPets = {}
+    local totalFound = 0
+    local shouldPing = false
+    local pingMessage = ""
+    local newlyFoundPets = {}
+    
+    -- Initialize counts
+    for petName in pairs(TARGET_PETS) do
+        foundPets[petName] = 0
+    end
+    
+    -- Try multiple container paths
+    local container = nil
+    local gui = player:FindFirstChild("PlayerGui")
+    
+    if gui then
+        local possiblePaths = {
+            "Tabs.Inventory.Menu.Categories.Pets.Inner.List.Container",
+            "Inventory.Frame.Pets.ScrollingFrame",
+            "Main.Inventory.Pets.List",
+            "Inventory.Pets.Container"
+        }
+        
+        for _, path in ipairs(possiblePaths) do
+            local obj = gui
+            for part in path:gmatch("[^.]+") do
+                obj = obj:FindFirstChild(part)
+                if not obj then break end
+            end
+            if obj then
+                container = obj
+                break
+            end
+        end
+    end
+    
+    if not container then
+        print("⚠️ Could not find pet container")
+        return foundPets, 0, false, "", {}
+    end
+    
+    print("📦 Scanning container: " .. container:GetFullName())
+    
+    -- Scan all items in container
+    local scannedItems = 0
+    for _, item in pairs(container:GetChildren()) do
+        if item:IsA("Frame") or item:IsA("TextButton") or item:IsA("ImageButton") then
+            local petName = nil
+            
+            -- Try to get pet name from common label locations
+            local labels = {"Name", "PetName", "Title", "TextLabel"}
+            for _, labelName in ipairs(labels) do
+                local label = item:FindFirstChild(labelName)
+                if label and label:IsA("TextLabel") and label.Text ~= "" then
+                    petName = label.Text
+                    break
+                end
+            end
+            
+            -- If no label, use the item name
+            if not petName or petName == "" then
+                petName = item.Name
+            end
+            
+            -- Clean the name
+            petName = tostring(petName):gsub("^%s+", ""):gsub("%s+$", ""):gsub("%s+", " ")
+            
+            -- Check if it's one of our target pets
+            for targetName in pairs(TARGET_PETS) do
+                if petName == targetName or petName:find(targetName) then
+                    foundPets[targetName] = foundPets[targetName] + 1
+                    totalFound = totalFound + 1
+                    scannedItems = scannedItems + 1
+                    break
+                end
+            end
+        end
+    end
+    
+    print("✅ Scanned " .. scannedItems .. " items, found " .. totalFound .. " target pets")
+    
+    -- Check for new high-rarity pets (1/250k or rarer)
+    for petName, count in pairs(foundPets) do
+        local petInfo = TARGET_PETS[petName]
+        if count > 0 and petInfo.ping and not pingedPetsThisSession[petName] then
+            table.insert(newlyFoundPets, {
+                name = petName,
+                count = count,
+                rarity = petInfo.rarity
+            })
+            pingedPetsThisSession[petName] = true
+        end
+    end
+    
+    -- Create ping message if high-rarity pets found
+    if #newlyFoundPets > 0 then
+        shouldPing = true
+        
+        if #newlyFoundPets == 1 then
+            local pet = newlyFoundPets[1]
+            pingMessage = USER_ID_TO_PING .. " **HIGH RARITY PET!** 🎉\n**" .. pet.name .. "** (" .. pet.rarity .. ")"
+        else
+            pingMessage = USER_ID_TO_PING .. " **HIGH RARITY PETS FOUND!** 🎉\n"
+            for _, pet in ipairs(newlyFoundPets) do
+                pingMessage = pingMessage .. "• **" .. pet.name .. "** (" .. pet.rarity .. ")\n"
+            end
+        end
+    end
+    
+    return foundPets, totalFound, shouldPing, pingMessage, newlyFoundPets
+end
+
+local function sendInventoryReport(foundPets, totalFound, shouldPing, pingMessage, newPets)
+    local username = Players.LocalPlayer.Name
+    local timestamp = os.date("%Y-%m-%d %H:%M:%S")
+    
+    -- Sort pets by rarity (rarest first)
+    local sortedPets = {}
+    for petName, count in pairs(foundPets) do
+        if count > 0 then
+            table.insert(sortedPets, {
+                name = petName,
+                count = count,
+                rarity = TARGET_PETS[petName].rarity,
+                rarityValue = TARGET_PETS[petName].rarityValue,
+                ping = TARGET_PETS[petName].ping
+            })
+        end
+    end
+    
+    table.sort(sortedPets, function(a, b)
+        if a.rarityValue == b.rarityValue then
+            return a.count > b.count
+        end
+        return a.rarityValue > b.rarityValue  -- Higher number = rarer
+    end)
+    
+    -- Create inventory list
+    local inventoryList = ""
+    if #sortedPets == 0 then
+        inventoryList = "No target pets found yet"
+    else
+        for _, pet in ipairs(sortedPets) do
+            local pingIcon = pet.ping and " 🔔" or ""
+            inventoryList = inventoryList .. string.format("• **%dx %s** (%s)%s\n", 
+                pet.count, pet.name, pet.rarity, pingIcon)
+        end
+    end
+    
+    -- Prepare embed
+    local embedColor = shouldPing and 16734296 or 3447003  -- Orange if ping, blue if not
+    local embedTitle = shouldPing and "🎯 HIGH RARITY ALERT!" or "🎯 Target Pet Tracker"
+    
+    local data = {
+        ["username"] = "High Rarity Tracker",
+        ["avatar_url"] = "https://cdn.discordapp.com/attachments/1162832240453681283/1245173003087380541/game_icon.png",
+        ["embeds"] = {{
+            ["title"] = embedTitle,
+            ["description"] = string.format("**User:** %s\n**Time:** %s", username, timestamp),
+            ["color"] = embedColor,
+            ["fields"] = {
+                {
+                    ["name"] = "Target Pets Found",
+                    ["value"] = inventoryList,
+                    ["inline"] = false
+                },
+                {
+                    ["name"] = "Stats",
+                    ["value"] = string.format("**Total:** %d pets\n**Types:** %d", totalFound, #sortedPets),
+                    ["inline"] = true
+                }
+            },
+            ["footer"] = {
+                ["text"] = "Pings only for 1/250k+ rarity"
+            }
+        }}
+    }
+    
+    -- Add ping to content if needed
+    if shouldPing and pingMessage ~= "" then
+        data["content"] = pingMessage
+    end
+    
+    local headers = {
+        ["Content-Type"] = "application/json"
+    }
+    
+    local body = HttpService:JSONEncode(data)
+    
+    local success, response = pcall(function()
+        return http_request({
+            Url = INVENTORY_WEBHOOK,
+            Method = "POST",
+            Headers = headers,
+            Body = body
+        })
+    end)
+    
+    if success then
+        if shouldPing then
+            print("⚠️ HIGH RARITY ALERT SENT WITH PING!")
+        else
+            print("✅ Report sent")
+        end
+        return true
+    else
+        print("❌ Failed to send:", response)
+        return false
+    end
+end
+
+local function scanAndReport()
+    print("\n" .. string.rep("=", 50))
+    print("🔍 Scanning for target pets at " .. os.date("%H:%M:%S"))
+    
+    local foundPets, totalFound, shouldPing, pingMessage, newPets = scanForTargetPets()
+    
+    print("\n📊 RESULTS:")
+    print(string.rep("-", 40))
+    
+    if totalFound == 0 then
+        print("No target pets found")
+    else
+        -- Display in console
+        for petName, count in pairs(foundPets) do
+            if count > 0 then
+                local info = TARGET_PETS[petName]
+                local pingIcon = info.ping and " 🔔" or ""
+                print(string.format("  %dx %s (%s)%s", count, petName, info.rarity, pingIcon))
+            end
+        end
+        print(string.rep("-", 40))
+        print("Total: " .. totalFound .. " target pets")
+        
+        if shouldPing then
+            print("⚠️  HIGH RARITY FOUND! Pinging " .. USER_ID_TO_PING)
+        end
+    end
+    
+    sendInventoryReport(foundPets, totalFound, shouldPing, pingMessage, newPets)
+    
+    return foundPets, totalFound, shouldPing
+end
+
+-- Startup
+wait(5)
+print("\n🚀 Starting High Rarity Pet Tracker...")
+print("User: " .. Players.LocalPlayer.Name)
+
+-- Send startup message
+local startupInfo = ""
+for petName, info in pairs(TARGET_PETS) do
+    local pingStatus = info.ping and "🔔 (WILL PING)" or "🔕 (no ping)"
+    startupInfo = startupInfo .. string.format("• **%s** - %s %s\n", petName, info.rarity, pingStatus)
+end
+
+local startupData = {
+    ["username"] = "High Rarity Tracker",
+    ["embeds"] = {{
+        ["title"] = "🎯 High Rarity Tracker Started",
+        ["description"] = "Tracking 4 specific pets\nPinging only for 1/250,000+ rarity",
+        ["color"] = 3066993,
+        ["fields"] = {
+            {
+                ["name"] = "Target Pets",
+                ["value"] = startupInfo,
+                ["inline"] = false
+            },
+            {
+                ["name"] = "User",
+                ["value"] = Players.LocalPlayer.Name,
+                ["inline"] = true
+            },
+            {
+                ["name"] = "Scan Interval",
+                ["value"] = "5 minutes",
+                ["inline"] = true
+            }
+        },
+        ["footer"] = {
+            ["text"] = "First scan in 15 seconds"
+        }
+    }}
+}
+
+pcall(function()
+    http_request({
+        Url = INVENTORY_WEBHOOK,
+        Method = "POST",
+        Headers = {["Content-Type"] = "application/json"},
+        Body = HttpService:JSONEncode(startupData)
+    })
+    print("Startup message sent!")
+end)
+
+wait(15)
+
+-- First scan
+scanAndReport()
+
+-- Main loop
+local scanCount = 0
+while true do
+    wait(CHECK_INTERVAL)
+    scanCount = scanCount + 1
+    print("\n🔄 Scan #" .. scanCount)
+    scanAndReport()
+end
